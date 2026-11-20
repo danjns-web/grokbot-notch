@@ -33,10 +33,11 @@ npm run setup
 
 Signing requires `CODESIGN_IDENTITY` (a **Developer ID Application** identity). The build will refuse Apple Development and ad-hoc signing.
 
-To copy an already built app into `/Applications` if that folder is writable, otherwise `~/Applications`, without sudo and without rebuilding:
+To copy an **already built and notarised** app into `/Applications` if that folder is writable, otherwise `~/Applications`, without sudo. This uses `ditto` and does **not** rebuild (so the stapled ticket is kept). Pass `--rebuild` only when you intend to compile again.
 
 ```bash
 npm run install:app
+# same as: ./scripts/setup.sh --install
 ```
 
 ---
@@ -135,15 +136,17 @@ npm run build:mac
 export NOTARY_PROFILE="your-notarytool-profile-name"
 npm run notarise
 
-# 3. Verify
+# 3. Verify the repo copy
 npm run verify:app
 # same checks: codesign --verify --deep --strict
 #              spctl -a -vvv -t exec
 #              xcrun stapler validate
 
-# 4. Install without sudo ( /Applications if writable, else ~/Applications )
+# 4. Install that same bundle (no rebuild) and launch only the installed copy
 npm run install:app
 ```
+
+`npm run install:app` / `./scripts/setup.sh --install` copies `./GrokBot Notch.app` with `ditto` and runs `xcrun stapler validate` on the installed copy. It rebuilds only if that bundle is missing, or if you pass `--rebuild` (which replaces the signature and drops the staple).
 
 Create the notary profile once on the Mac, in Terminal, not in chat:
 

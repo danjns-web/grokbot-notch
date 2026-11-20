@@ -17,10 +17,12 @@ Please set up and launch GrokBot Notch on my Mac from https://github.com/danjns-
 3. Compile the native Swift macOS app (`macos/NotchApp.swift`) into `GrokBot Notch.app` and sign it **only** with the `CODESIGN_IDENTITY` you named (`Developer ID Application: …`, hardened runtime, secure timestamp).
 4. Start the local Grok Bot bridge on `127.0.0.1:4789` (loopback-only, per-launch bearer token for the native `WKWebView`) and open `GrokBot Notch.app` at the top of your primary display.
 
-To notarise after that (you create the keychain profile yourself with `xcrun notarytool store-credentials`):
+To sign, notarise, then install (you create the keychain profile yourself with `xcrun notarytool store-credentials`). Install last, and do not rebuild in between, or the stapled ticket is lost:
 
 ```bash
+export CODESIGN_IDENTITY="Developer ID Application: …"
 export NOTARY_PROFILE="your-profile-name"
+npm run build:mac
 npm run notarise
 npm run verify:app
 npm run install:app

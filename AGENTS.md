@@ -26,19 +26,18 @@ npm run setup
 
 `BUNDLE_ID` defaults to `uk.danjns.grokbot-notch`. The owner must confirm that identifier in the Apple Developer portal (team `KEWEWE7JMC`) before treating a signed build as final.
 
-To copy an **already built** app into `/Applications` if writable, otherwise `~/Applications`, without sudo and without rebuilding (keeps a stapled notary ticket):
+Signed and notarised install order — do not rebuild between notarise and install:
 
 ```bash
+export CODESIGN_IDENTITY="Developer ID Application: …"
+export NOTARY_PROFILE="your-notarytool-profile-name"
+npm run build:mac
+npm run notarise
+npm run verify:app
 npm run install:app
 ```
 
-To notarise and staple after a signed build:
-
-```bash
-export NOTARY_PROFILE="your-notarytool-profile-name"
-npm run notarise
-npm run verify:app
-```
+`npm run install:app` (same as `./scripts/setup.sh --install`) copies the existing `./GrokBot Notch.app` with `ditto` and does **not** rebuild. Pass `--rebuild` only when you intend to compile again. After install it launches the Applications copy, not a second process from the repo folder.
 
 Do not read, log, or print the notary profile contents, API keys, or the launch-auth token file.
 

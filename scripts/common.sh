@@ -128,28 +128,65 @@ choose_install_dir() {
   printf '%s\n' "${HOME}/Applications"
 }
 
+# Copy an .app with ditto so the code signature and stapled notary ticket survive.
+# cp -R can drop extended attributes and leave Gatekeeper with no ticket.
+copy_app_bundle() {
+  local src="$1"
+  local dest="$2"
+  if ! command -v ditto >/dev/null 2>&1; then
+    echo "[error] ditto is required to copy the app without replacing its signature." >&2
+    return 1
+  fi
+  rm -rf "$dest" || return 1
+  ditto "$src" "$dest"
+}
+
+warn_if_unstapled() {
+  local app="$1"
+  if ! command -v xcrun >/dev/null 2>&1; then
+    return 0
+  fi
+  if xcrun stapler validate "$app" >/dev/null 2>&1; then
+    echo "[ok] Stapled notary ticket is present on $app"
+    return 0
+  fi
+  echo "[warn] No stapled notary ticket on $app." >&2
+  echo "[warn] Gatekeeper may warn until you notarise the repo copy, then install again:" >&2
+  echo "[warn]   npm run notarise && npm run verify:app && npm run install:app" >&2
+  echo "[warn] Do not pass --rebuild unless you intend to compile again (that replaces the signature)." >&2
+}
+
+# Quit a running GrokBotNotch, copy the existing bundle as-is, then check the staple.
+# Sets INSTALLED_APP_PATH to the destination .app.
 install_app_bundle() {
   local src="$1"
   local dest_dir dest
+  INSTALLED_APP_PATH=""
   if [ ! -d "$src" ]; then
     echo "[error] App bundle not found: $src" >&2
     return 1
   fi
+
+  echo "[setup] Stopping any running GrokBot Notch before replacing the installed copy..."
+  quit_notch_app
+  stop_bridge_server
+
   dest_dir="$(choose_install_dir)"
   dest="${dest_dir}/GrokBot Notch.app"
-  echo "[setup] Installing GrokBot Notch.app to ${dest_dir} (no sudo)..."
-  if ! rm -rf "$dest" 2>/dev/null || ! cp -R "$src" "$dest" 2>/dev/null; then
+  echo "[setup] Installing GrokBot Notch.app to ${dest_dir} with ditto (no sudo, signature kept)..."
+  if ! copy_app_bundle "$src" "$dest" 2>/dev/null; then
     if [ "$dest_dir" = "/Applications" ]; then
       echo "[setup] /Applications is not writable; installing to ~/Applications instead."
       dest_dir="${HOME}/Applications"
       mkdir -p "$dest_dir"
       dest="${dest_dir}/GrokBot Notch.app"
-      rm -rf "$dest"
-      cp -R "$src" "$dest"
+      copy_app_bundle "$src" "$dest"
     else
       echo "[error] Could not install to $dest" >&2
       return 1
     fi
   fi
+  export INSTALLED_APP_PATH="$dest"
   echo "[ok] Installed to $dest"
+  warn_if_unstapled "$dest"
 }

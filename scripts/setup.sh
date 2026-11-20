@@ -6,11 +6,16 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$(dirname "$0")/common.sh"
 
 INSTALL_TO_APPS=false
+FORCE_REBUILD=false
+APP_BUNDLE="$ROOT_DIR/GrokBot Notch.app"
 
 for arg in "$@"; do
   case "$arg" in
     --install|-i)
       INSTALL_TO_APPS=true
+      ;;
+    --rebuild)
+      FORCE_REBUILD=true
       ;;
   esac
 done
@@ -56,21 +61,38 @@ else
   echo "[ok] Found /Applications/Grok Bot.app"
 fi
 
-# 5. Build GrokBot Notch.app (requires CODESIGN_IDENTITY)
 chmod +x \
   "$ROOT_DIR/scripts/build-mac-app.sh" \
   "$ROOT_DIR/scripts/launch.sh" \
   "$ROOT_DIR/scripts/notarise-mac-app.sh" \
-  "$ROOT_DIR/scripts/verify-mac-app.sh"
-"$ROOT_DIR/scripts/build-mac-app.sh"
+  "$ROOT_DIR/scripts/verify-mac-app.sh" \
+  "$ROOT_DIR/scripts/install-app.sh"
 
-# 6. Optionally copy to /Applications, or ~/Applications if that needs no admin rights
-if [ "$INSTALL_TO_APPS" = true ]; then
-  install_app_bundle "$ROOT_DIR/GrokBot Notch.app"
+# 5. Build only when there is no bundle, or when --rebuild is passed.
+#    Rebuilding re-signs and drops a stapled notary ticket, so --install of an
+#    existing ./GrokBot Notch.app must copy it as-is.
+if [ "$FORCE_REBUILD" = true ] || [ ! -d "$APP_BUNDLE" ]; then
+  if [ "$FORCE_REBUILD" = true ] && [ -d "$APP_BUNDLE" ]; then
+    echo "[setup] --rebuild: compiling and re-signing (this replaces any stapled ticket)."
+  fi
+  "$ROOT_DIR/scripts/build-mac-app.sh"
+else
+  echo "[setup] Using existing $APP_BUNDLE (signature and staple kept)."
+  echo "[setup] Pass --rebuild to compile and re-sign."
 fi
 
-# 7. Launch GrokBot Notch
-"$ROOT_DIR/scripts/launch.sh"
+# 6. Install the existing bundle with ditto, then launch only that copy.
+if [ "$INSTALL_TO_APPS" = true ]; then
+  install_app_bundle "$APP_BUNDLE"
+  if [ -z "${INSTALLED_APP_PATH:-}" ] || [ ! -d "$INSTALLED_APP_PATH" ]; then
+    echo "[error] Install did not produce an app bundle." >&2
+    exit 1
+  fi
+  echo "[setup] Launching the installed copy (not the repo folder build)..."
+  open "$INSTALLED_APP_PATH"
+else
+  "$ROOT_DIR/scripts/launch.sh"
+fi
 
 echo ""
 echo "=================================================="
