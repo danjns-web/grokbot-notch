@@ -6,7 +6,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/robzilla1738/grokbot-notch.git"
+    "url": "https://github.com/danjns-web/grokbot-notch.git"
   },
   "keywords": [
     "grok",
@@ -22,9 +22,11 @@
   },
   "scripts": {
     "setup": "./scripts/setup.sh",
-    "install:app": "./scripts/setup.sh --install",
+    "install:app": "./scripts/install-app.sh",
     "start": "./scripts/launch.sh",
     "server": "node server.mjs",
-    "build:mac": "./scripts/build-mac-app.sh"
+    "build:mac": "./scripts/build-mac-app.sh",
+    "notarise": "./scripts/notarise-mac-app.sh",
+    "verify:app": "./scripts/verify-mac-app.sh"
   }
 }

@@ -21,10 +21,11 @@ const ROSTER_AVATARS_DIR = path.join(GROKBOT_SUPPORT_DIR, "roster-avatars");
 const LOCAL_STATE_FILE = path.join(HOME, ".grokbot-notch-state.json");
 const NOTCH_SUPPORT_DIR = path.join(HOME, "Library/Application Support/GrokBot Notch");
 const AUTH_TOKEN_FILE = path.join(NOTCH_SUPPORT_DIR, "launch-auth-token");
+const PID_FILE = path.join(NOTCH_SUPPORT_DIR, "server.pid");
 const BACKEND_BASE = process.env.SAND_BACKEND_URL || "https://api2.cursor.sh";
 
-const ALLOWED_HOSTS = new Set(["127.0.0.1:4789", "localhost:4789"]);
-const ALLOWED_ORIGINS = new Set(["http://127.0.0.1:4789", "http://localhost:4789"]);
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
 
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
@@ -907,13 +908,39 @@ function sendJson(res, status, payload, extraHeaders = {}) {
   res.end(body);
 }
 
-function injectAuthTokenIntoHtml(html) {
-  const escaped = LAUNCH_AUTH_TOKEN.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const snippet = `<script>window.__GROKBOT_NOTCH_AUTH_TOKEN='${escaped}';</script>`;
-  if (html.includes("</head>")) {
-    return html.replace("</head>", `${snippet}</head>`);
+function writePidFile() {
+  ensureNotchSupportDir();
+  fs.writeFileSync(PID_FILE, String(process.pid), { encoding: "utf8", mode: 0o600 });
+}
+
+function removePidFile() {
+  try {
+    if (!fs.existsSync(PID_FILE)) return;
+    const existing = fs.readFileSync(PID_FILE, "utf8").trim();
+    if (existing === String(process.pid)) {
+      fs.unlinkSync(PID_FILE);
+    }
+  } catch {
+    // ignore
   }
-  return `${snippet}${html}`;
+}
+
+function resolvePublicFile(urlPathname) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPathname);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("\0")) return null;
+  const relPath = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  const root = path.resolve(PUBLIC_DIR);
+  const resolved = path.resolve(root, relPath);
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  if (resolved !== root && !resolved.startsWith(prefix)) {
+    return null;
+  }
+  return resolved;
 }
 
 const MIME_TYPES = {
@@ -1129,25 +1156,17 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true }, cors);
     }
 
-    // Serve static files from public/
-    const relPath = pathname === "/" ? "index.html" : pathname.slice(1);
-    const safePath = path.normalize(relPath).replace(/^(\.\.(\/|\\|$))+/, "");
-    const fullPath = path.join(PUBLIC_DIR, safePath);
-
-    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+    // Serve static files from public/ only (strict path.resolve prefix check).
+    // The launch bearer token is not injected into HTML; the native WKWebView
+    // receives it via WKUserScript instead.
+    const fullPath = resolvePublicFile(pathname);
+    if (fullPath && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
       const ext = path.extname(fullPath).toLowerCase();
       const baseHeaders = {
         "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
         "Cache-Control": "no-cache",
         ...cors
       };
-      if (ext === ".html") {
-        const html = fs.readFileSync(fullPath, "utf8");
-        const body = injectAuthTokenIntoHtml(html);
-        res.writeHead(200, baseHeaders);
-        res.end(body);
-        return;
-      }
       res.writeHead(200, baseHeaders);
       fs.createReadStream(fullPath).pipe(res);
       return;
@@ -1164,6 +1183,31 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+function shutdown(signal) {
+  console.log(`[gb-notch] ${signal}: closing loopback server`);
+  server.close(() => {
+    removePidFile();
+    process.exit(0);
+  });
+  setTimeout(() => {
+    removePidFile();
+    process.exit(0);
+  }, 2000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`[gb-notch] Port ${PORT} is already in use on 127.0.0.1`);
+    process.exit(1);
+  }
+  console.error("[gb-notch] Server error:", err.message);
+  process.exit(1);
+});
+
 server.listen(PORT, "127.0.0.1", () => {
+  writePidFile();
   console.log(`[gb-notch] GrokBot Notch server listening on http://127.0.0.1:${PORT}`);
 });
