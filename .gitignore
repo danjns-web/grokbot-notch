@@ -1,6 +1,7 @@
 # macOS & build artifacts
 .DS_Store
 GrokBot Notch.app/
+GrokBot Notch.zip
 *.log
 node_modules/
 .env

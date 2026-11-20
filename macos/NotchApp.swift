@@ -376,9 +376,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     // MARK: - Node Server Management
-    private func launchAuthTokenFilePath() -> String {
+    private func notchSupportDir() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/Library/Application Support/GrokBot Notch/launch-auth-token"
+        return "\(home)/Library/Application Support/GrokBot Notch"
+    }
+
+    private func launchAuthTokenFilePath() -> String {
+        return "\(notchSupportDir())/launch-auth-token"
+    }
+
+    private func expandUserPath(_ raw: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if raw == "~" { return home }
+        if raw.hasPrefix("~/") {
+            return home + String(raw.dropFirst(1))
+        }
+        return raw
+    }
+
+    /// Resolve Node for a menu-bar app with a minimal PATH.
+    /// Override with GROKBOT_NODE_BIN, or a one-line path in
+    /// `~/Library/Application Support/GrokBot Notch/node-bin`.
+    private func resolveNodeBinary() -> URL {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+
+        if let override = ProcessInfo.processInfo.environment["GROKBOT_NODE_BIN"], !override.isEmpty {
+            let expanded = expandUserPath(override)
+            if fm.isExecutableFile(atPath: expanded) {
+                return URL(fileURLWithPath: expanded)
+            }
+            NSLog("[GrokBotNotch] GROKBOT_NODE_BIN is set but not executable: \(expanded)")
+        }
+
+        let overrideFile = "\(notchSupportDir())/node-bin"
+        if let raw = try? String(contentsOfFile: overrideFile, encoding: .utf8) {
+            let firstLine = raw.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
+            let line = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty {
+                let expanded = expandUserPath(line)
+                if fm.isExecutableFile(atPath: expanded) {
+                    return URL(fileURLWithPath: expanded)
+                }
+                NSLog("[GrokBotNotch] node-bin override is set but not executable: \(expanded)")
+            }
+        }
+
+        let candidates = [
+            "\(home)/.local/bin/node",
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "\(home)/.nvm/current/bin/node",
+            "\(home)/.volta/bin/node",
+            "\(home)/.local/share/fnm/aliases/default/bin/node"
+        ]
+        if let found = candidates.first(where: { fm.isExecutableFile(atPath: $0) }) {
+            return URL(fileURLWithPath: found)
+        }
+        return URL(fileURLWithPath: "/usr/bin/env")
     }
 
     private func readLaunchAuthTokenFromDisk() -> String? {
@@ -464,20 +519,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let nodeCandidates = [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "\(home)/.nvm/current/bin/node",
-            "\(home)/.volta/bin/node",
-            "\(home)/.local/share/fnm/aliases/default/bin/node"
-        ]
-        let nodeBin = nodeCandidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env"
+        let nodeURL = resolveNodeBinary()
         let proc = Process()
-        if nodeBin == "/usr/bin/env" {
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.executableURL = nodeURL
+        if nodeURL.path == "/usr/bin/env" {
             proc.arguments = ["node", serverPath]
         } else {
-            proc.executableURL = URL(fileURLWithPath: nodeBin)
             proc.arguments = [serverPath]
         }
         proc.currentDirectoryURL = URL(fileURLWithPath: (serverPath as NSString).deletingLastPathComponent)
@@ -485,7 +532,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         self.launchAuthToken = token
         var env = ProcessInfo.processInfo.environment
         env["GROKBOT_NOTCH_AUTH_TOKEN"] = token
+        let extraPaths = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
+        let existingPath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
         proc.environment = env
+        NSLog("[GrokBotNotch] Starting server with Node at \(nodeURL.path)")
         do {
             try proc.run()
             self.serverProcess = proc
@@ -827,7 +878,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         type: WKMediaCaptureType,
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
-        decisionHandler(.grant)
+        // Native Voice Mode uses AVAudioEngine and AVCaptureDevice.requestAccess,
+        // which already shows the system microphone prompt. Do not auto-grant
+        // WebView getUserMedia; let the system prompt govern capture.
+        decisionHandler(.prompt)
     }
 }
 

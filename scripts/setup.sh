@@ -2,12 +2,20 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=./common.sh
+source "$(dirname "$0")/common.sh"
+
 INSTALL_TO_APPS=false
+FORCE_REBUILD=false
+APP_BUNDLE="$ROOT_DIR/GrokBot Notch.app"
 
 for arg in "$@"; do
   case "$arg" in
     --install|-i)
       INSTALL_TO_APPS=true
+      ;;
+    --rebuild)
+      FORCE_REBUILD=true
       ;;
   esac
 done
@@ -24,21 +32,26 @@ fi
 
 # 2. Verify Swift compiler (Xcode Command Line Tools)
 if ! command -v swiftc >/dev/null 2>&1; then
-  echo "[error] swiftc not found. Installing Xcode Command Line Tools..."
-  xcode-select --install || true
-  echo "Please complete the Xcode Command Line Tools installation and re-run ./scripts/setup.sh"
+  echo "[error] swiftc not found."
+  echo "Install Xcode Command Line Tools, then re-run this script:"
+  echo "  xcode-select --install"
+  echo "Or install full Xcode from the App Store / developer.apple.com."
   exit 1
 fi
 
 # 3. Verify Node.js (v22.5+ required for built-in node:sqlite)
-if ! command -v node >/dev/null 2>&1; then
-  echo "[error] Node.js is required (v22.5+ for built-in node:sqlite). Install via: brew install node"
+if ! NODE_BIN="$(resolve_node_bin)"; then
+  echo "[error] Node.js is required (v22.5+ for built-in node:sqlite)."
+  echo "Install via Homebrew (brew install node) or put node at ~/.local/bin/node."
+  echo "You can also set GROKBOT_NODE_BIN to an absolute path."
   exit 1
 fi
 
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]')"
 if [ "$NODE_MAJOR" -lt 22 ]; then
-  echo "[warn] Node.js v22+ is recommended for built-in node:sqlite (found $(node -v))."
+  echo "[warn] Node.js v22+ is recommended for built-in node:sqlite (found $("$NODE_BIN" -v) at $NODE_BIN)."
+else
+  echo "[ok] Node.js $("$NODE_BIN" -v) at $NODE_BIN"
 fi
 
 # 4. Check for Grok Bot.app
@@ -48,20 +61,38 @@ else
   echo "[ok] Found /Applications/Grok Bot.app"
 fi
 
-# 5. Build GrokBot Notch.app
-chmod +x "$ROOT_DIR/scripts/build-mac-app.sh" "$ROOT_DIR/scripts/launch.sh"
-"$ROOT_DIR/scripts/build-mac-app.sh"
+chmod +x \
+  "$ROOT_DIR/scripts/build-mac-app.sh" \
+  "$ROOT_DIR/scripts/launch.sh" \
+  "$ROOT_DIR/scripts/notarise-mac-app.sh" \
+  "$ROOT_DIR/scripts/verify-mac-app.sh" \
+  "$ROOT_DIR/scripts/install-app.sh"
 
-# 6. Optionally copy to /Applications
-if [ "$INSTALL_TO_APPS" = true ]; then
-  echo "[setup] Installing GrokBot Notch.app to /Applications..."
-  rm -rf "/Applications/GrokBot Notch.app"
-  cp -R "$ROOT_DIR/GrokBot Notch.app" "/Applications/GrokBot Notch.app"
-  echo "[ok] Installed to /Applications/GrokBot Notch.app"
+# 5. Build only when there is no bundle, or when --rebuild is passed.
+#    Rebuilding re-signs and drops a stapled notary ticket, so --install of an
+#    existing ./GrokBot Notch.app must copy it as-is.
+if [ "$FORCE_REBUILD" = true ] || [ ! -d "$APP_BUNDLE" ]; then
+  if [ "$FORCE_REBUILD" = true ] && [ -d "$APP_BUNDLE" ]; then
+    echo "[setup] --rebuild: compiling and re-signing (this replaces any stapled ticket)."
+  fi
+  "$ROOT_DIR/scripts/build-mac-app.sh"
+else
+  echo "[setup] Using existing $APP_BUNDLE (signature and staple kept)."
+  echo "[setup] Pass --rebuild to compile and re-sign."
 fi
 
-# 7. Launch GrokBot Notch
-"$ROOT_DIR/scripts/launch.sh"
+# 6. Install the existing bundle with ditto, then launch only that copy.
+if [ "$INSTALL_TO_APPS" = true ]; then
+  install_app_bundle "$APP_BUNDLE"
+  if [ -z "${INSTALLED_APP_PATH:-}" ] || [ ! -d "$INSTALLED_APP_PATH" ]; then
+    echo "[error] Install did not produce an app bundle." >&2
+    exit 1
+  fi
+  echo "[setup] Launching the installed copy (not the repo folder build)..."
+  open "$INSTALLED_APP_PATH"
+else
+  "$ROOT_DIR/scripts/launch.sh"
+fi
 
 echo ""
 echo "=================================================="

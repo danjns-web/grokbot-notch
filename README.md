@@ -13,7 +13,7 @@
 Want your **Grok Bot** to install and launch this for you automatically? Just paste this into your Grok Bot chat:
 
 ```text
-Set up and launch GrokBot Notch on my Mac from https://github.com/robzilla1738/grokbot-notch — clone it to ~/grokbot-notch, follow AGENTS.md, run `npm run install:app`, and verify it's running at the top of my screen.
+Set up and launch GrokBot Notch on my Mac from https://github.com/danjns-web/grokbot-notch — clone it to ~/grokbot-notch, follow AGENTS.md, set CODESIGN_IDENTITY to my Developer ID Application identity, run `npm run setup`, and confirm GrokBotNotch is running. Do not read or print the launch-auth token file.
 ```
 
 *(See [`GROKBOT_SETUP.md`](GROKBOT_SETUP.md) and [`AGENTS.md`](AGENTS.md) for the autonomous agent setup guide.)*
@@ -25,15 +25,19 @@ Set up and launch GrokBot Notch on my Mac from https://github.com/robzilla1738/g
 If you prefer to run it yourself in Terminal:
 
 ```bash
-git clone https://github.com/robzilla1738/grokbot-notch.git ~/grokbot-notch
+git clone https://github.com/danjns-web/grokbot-notch.git ~/grokbot-notch
 cd ~/grokbot-notch
+export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 npm run setup
 ```
 
-To also install `GrokBot Notch.app` into `/Applications`:
+Signing requires `CODESIGN_IDENTITY` (a **Developer ID Application** identity). The build will refuse Apple Development and ad-hoc signing.
+
+To copy an **already built and notarised** app into `/Applications` if that folder is writable, otherwise `~/Applications`, without sudo. This uses `ditto` and does **not** rebuild (so the stapled ticket is kept). Pass `--rebuild` only when you intend to compile again.
 
 ```bash
 npm run install:app
+# same as: ./scripts/setup.sh --install
 ```
 
 ---
@@ -75,8 +79,8 @@ npm run install:app
 grokbot-notch/
 ├── macos/
 │   ├── NotchApp.swift        # Native NSPanel + WKWebView hit-testing + AVAudioEngine (24kHz) + Carbon HotKeys
-│   ├── Info.plist            # LSUIElement bundle metadata & NSMicrophoneUsageDescription
-│   └── entitlements.plist    # Audio input & network entitlements
+│   ├── Info.plist            # LSUIElement bundle metadata, localhost ATS, NSMicrophoneUsageDescription
+│   └── entitlements.plist    # Audio input & network entitlements (hardened runtime)
 ├── public/
 │   ├── index.html            # Collapsed chin bar + Expanded U-shaped Notch pouch
 │   ├── styles.css            # Pure black hardware-notch geometry, concave ears & spring transitions
@@ -85,9 +89,12 @@ grokbot-notch/
 │   └── sounds/               # Authentic UI ticks & call chimes
 ├── server.mjs                # Local Node.js bridge (auth discovery, ConnectRPC proxy, transcript sync)
 └── scripts/
-    ├── setup.sh              # One-command prerequisite check, build & launch
-    ├── build-mac-app.sh      # Compiles Swift binary & signs GrokBot Notch.app
-    └── launch.sh             # Starts local bridge server & opens GrokBot Notch.app
+    ├── setup.sh              # Prerequisite check, signed build & launch
+    ├── build-mac-app.sh      # Compiles Swift and signs with CODESIGN_IDENTITY only
+    ├── notarise-mac-app.sh   # Zip, notarytool submit, staple
+    ├── verify-mac-app.sh     # codesign / spctl / stapler checks
+    ├── install-app.sh        # Copy to /Applications or ~/Applications (no sudo)
+    └── launch.sh             # Starts local bridge & opens GrokBot Notch.app
 ```
 
 ---
@@ -96,21 +103,69 @@ grokbot-notch/
 
 The Node bridge binds to **127.0.0.1 only** and rejects requests whose `Host` is not `127.0.0.1:4789` / `localhost:4789` or whose `Origin` (when present) is not the matching loopback URL. This blocks DNS rebinding and cross-site browser access.
 
-Each server launch gets a random **32-byte auth token** (also writable via `GROKBOT_NOTCH_AUTH_TOKEN` when the Swift app spawns the process). The token is stored at:
+Each server launch gets a random **32-byte auth token** (also writable via `GROKBOT_NOTCH_AUTH_TOKEN` when the Swift app spawns the process). The token is stored at `~/Library/Application Support/GrokBot Notch/launch-auth-token` (mode `0600`) so the native app can read it. Do not print or `cat` that file.
 
-`~/Library/Application Support/GrokBot Notch/launch-auth-token` (mode `0600`)
+All `/api/*` routes require `Authorization: Bearer <token>` (or `X-GrokBot-Notch-Token`), compared with a timing-safe check. The native `WKWebView` receives the token via a Swift `WKUserScript` at document start. HTML served to browsers does **not** include the token, so browser preview cannot call the API.
 
-All `/api/*` routes require `Authorization: Bearer <token>` (or `X-GrokBot-Notch-Token`). The Notch web UI receives the token via injected HTML / a Swift `WKUserScript`; `public/app.js` sends it on every API call.
-
-Manual health check:
+Confirm the bridge is up without reading the token (expect HTTP **401**):
 
 ```bash
-TOKEN="$(cat "$HOME/Library/Application Support/GrokBot Notch/launch-auth-token")"
-curl -s -H "Authorization: Bearer $TOKEN" -H "Host: 127.0.0.1:4789" \
-  http://127.0.0.1:4789/api/bootstrap | head -c 400
+curl -s -o /dev/null -w "%{http_code}\n" -H "Host: 127.0.0.1:4789" \
+  http://127.0.0.1:4789/api/bootstrap
 ```
 
+Static files are served only from `public/`, with a `path.resolve` prefix check.
+
 Server logs from `npm start` go to `~/Library/Logs/grokbot-notch/server.log` (directory `0700`, log file `0600`).
+
+## 🔏 Build, sign, notarise, staple
+
+These steps are meant to be run on a Mac with a **Developer ID Application** certificate and a notarytool keychain profile. This environment cannot sign or notarise for you.
+
+**Default bundle ID:** `uk.danjns.grokbot-notch`. **You must confirm this** in the Apple Developer portal under team `KEWEWE7JMC` (or set `BUNDLE_ID` to an identifier you already own) before a Gatekeeper-clean distribution.
+
+Node for the menu-bar app is resolved in this order: `GROKBOT_NODE_BIN`, then `~/Library/Application Support/GrokBot Notch/node-bin` (one-line path), then `~/.local/bin/node`, Homebrew, nvm/volta/fnm. Menu-bar apps often have a minimal PATH.
+
+```bash
+# 1. Named Developer ID only (fails if unset, Apple Development, or ad-hoc)
+export CODESIGN_IDENTITY="Developer ID Application: Your Name (KEWEWE7JMC)"
+export BUNDLE_ID="${BUNDLE_ID:-uk.danjns.grokbot-notch}"   # confirm this id
+npm run build:mac
+
+# 2. Notarise and staple (profile name only; never paste API keys into chat)
+export NOTARY_PROFILE="your-notarytool-profile-name"
+npm run notarise
+
+# 3. Verify the repo copy
+npm run verify:app
+# same checks: codesign --verify --deep --strict
+#              spctl -a -vvv -t exec
+#              xcrun stapler validate
+
+# 4. Install that same bundle (no rebuild) and launch only the installed copy
+npm run install:app
+```
+
+`npm run install:app` / `./scripts/setup.sh --install` copies `./GrokBot Notch.app` with `ditto` and runs `xcrun stapler validate` on the installed copy. It rebuilds only if that bundle is missing, or if you pass `--rebuild` (which replaces the signature and drops the staple).
+
+Create the notary profile once on the Mac, in Terminal, not in chat:
+
+```bash
+xcrun notarytool store-credentials
+```
+
+Then set `NOTARY_PROFILE` to the profile **name** you chose. The scripts never read Keychain secrets themselves.
+
+## 📍 Finding Node
+
+If the Notch app cannot start the bridge, point it at your binary (Dan’s Air uses `/Users/danjns/.local/bin/node`):
+
+```bash
+export GROKBOT_NODE_BIN="$HOME/.local/bin/node"
+# or, for Finder / menu-bar launches:
+mkdir -p "$HOME/Library/Application Support/GrokBot Notch"
+printf '%s\n' "$HOME/.local/bin/node" > "$HOME/Library/Application Support/GrokBot Notch/node-bin"
+```
 
 ---
 
